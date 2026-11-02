@@ -34,11 +34,21 @@ jobs:
         with:
           ref: b7e50177c967c843b91fa48e56e7d1d49da2e2a9
           path: baseline
+      - name: Copy only new regression tests onto the baseline
+        run: cp tests/uni_agent/sandbox/test_local_descendant_groups.py baseline/tests/uni_agent/sandbox/test_local_descendant_groups.py
       - name: Slow snapshot regressions fail on unchanged phase 1
         working-directory: baseline
         run: |
+          PYTHONPATH=. python - <<'PYCODE'
+          import pathlib, subprocess
+          from uni_agent.sandbox import local
+          source = pathlib.Path(local.__file__).resolve()
+          assert source == pathlib.Path('uni_agent/sandbox/local.py').resolve(), source
+          assert source.read_bytes() == subprocess.check_output(['git', 'show', 'HEAD:uni_agent/sandbox/local.py'])
+          print('Baseline source verified:', source)
+          PYCODE
           set +e
-          PYTHONPATH=. python -m pytest ../tests/uni_agent/sandbox/test_local_descendant_groups.py -k slow_snapshot -q --tb=short --junitxml=../results/red.xml > ../results/red.log 2>&1
+          PYTHONPATH=. python -m pytest tests/uni_agent/sandbox/test_local_descendant_groups.py -k slow_snapshot -q --tb=short --junitxml=../results/red.xml > ../results/red.log 2>&1
           result=$?
           set -e
           test "$result" = 1
@@ -107,8 +117,10 @@ jobs:
         if: matrix.version == '1.19.3'
         env:
           OPENCODE_BIN: /opt/opencode/bin/opencode
-          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
-        run: bash scripts/validation/run_opencode_phase1.sh results/combined-sidecar
+        run: |
+          # Preserve the runner Python's own libpython before adding task glibc libraries.
+          export LD_LIBRARY_PATH="$pythonLocation/lib:/usr/lib/x86_64-linux-gnu"
+          bash scripts/validation/run_opencode_phase1.sh results/combined-sidecar
       - name: Real tool environment and custom shared library
         if: matrix.version == '1.19.3'
         env:

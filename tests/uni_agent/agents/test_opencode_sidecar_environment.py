@@ -50,7 +50,8 @@ async def test_sidecar_preserves_task_library_environment(tmp_path, monkeypatch,
         + ("data['marker'] = ctypes.CDLL('libua_phase2.so').ua_phase2_marker()\n" if library_env == "custom" else "")
         + "pathlib.Path('result.json').write_text(json.dumps(data))\n"
     )
-    command = shlex.join([sys.executable, "-I", str(script)])
+    # The task uses system Python; runner Python needs a separate libpython path.
+    command = shlex.join(["/usr/bin/python3", "-I", str(script)])
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
