@@ -1,0 +1,102 @@
+name: OpenCode saturation and version investigation
+on:
+  push:
+    branches: [codex/opencode-phase3-investigation]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  saturation:
+    if: github.repository == 'cjyhjy/uni-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: python -m pip install -r scripts/validation/opencode-phase1-requirements.txt
+      - name: Saturated default executor and shutdown-boundary observations
+        run: |
+          mkdir -p results
+          PYTHONPATH=. python scripts/validation/executor_saturation.py --output results/saturation.json | tee results/saturation.log
+      - name: Existing provider regression suite
+        run: PYTHONPATH=. python -m pytest tests/uni_agent/sandbox/test_local_sandbox.py tests/uni_agent/sandbox/test_local_descendant_groups.py -q --tb=short --junitxml=results/provider.xml | tee results/provider.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: saturation-python-${{ matrix.python }}
+          path: results/
+  sidecar:
+    if: github.repository == 'cjyhjy/uni-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1.18.18', '1.19.3']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r scripts/validation/opencode-phase1-requirements.txt
+      - name: Build exact 298 sidecar or version-only experiment
+        env:
+          CLI_VERSION: '${{ matrix.version }}'
+        run: |
+          mkdir -p results
+          args=()
+          if [ "$CLI_VERSION" = 1.19.3 ]; then
+            args+=(--build-arg OPENCODE_VERSION=1.19.3 --build-arg OPENCODE_SHA512=11d46c02fd50140d73da20bc66628a75322d6a57dbe5eb37cd124958dcb11d687f0be2b0038b29780dff42adab3de2b3c78c5f8ddaac519ab40617018ffec3c6)
+          fi
+          docker build --progress=plain "${args[@]}" -t ua-opencode-phase1 examples/sidecar/opencode 2>&1 | tee results/build.log
+          docker image inspect ua-opencode-phase1 > results/image.json
+          cid=$(docker create ua-opencode-phase1 /bin/true)
+          mkdir -p "$RUNNER_TEMP/payload"
+          docker export "$cid" | tar -x -C "$RUNNER_TEMP/payload"
+          docker rm "$cid"
+          sudo mkdir -p /opt/opencode
+          sudo mount --bind "$RUNNER_TEMP/payload" /opt/opencode
+          sudo mount -o remount,bind,ro /opt/opencode
+          mount | grep /opt/opencode > results/mount.txt
+          /opt/opencode/bin/probe.sh | tee results/startup.log
+      - name: Record exact CLI and configuration contract
+        env:
+          CLI_VERSION: '${{ matrix.version }}'
+        run: PYTHONPATH=. python scripts/validation/inspect_opencode_contract.py --cli /opt/opencode/bin/opencode --expected "$CLI_VERSION" --output results/contract.json
+      - name: Confirm unchanged production guard
+        if: matrix.version == '1.18.18'
+        run: PYTHONPATH=. python scripts/validation/check_sidecar_version_boundary.py /opt/opencode/bin/opencode | tee results/production-guard.json
+      - name: Experimental protocol, cleanup and task-tool comparison
+        env:
+          OPENCODE_BIN: /opt/opencode/bin/opencode
+          OPENCODE_SIDECAR_BIN: /opt/opencode/bin/opencode
+          UA_COMPAT_VERSION: '${{ matrix.version }}'
+          UA_COMPAT_RECORDS: results/compatibility-events.jsonl
+        run: |
+          PYTHONPATH=. python -m pytest -p scripts.validation.opencode_compatibility_plugin \
+            tests/uni_agent/agents/test_opencode_cli_probe.py \
+            tests/uni_agent/agents/test_opencode_process_cleanup.py \
+            tests/uni_agent/agents/test_opencode_task_smoke.py \
+            tests/uni_agent/agents/test_opencode_sidecar_environment.py \
+            -q -s --tb=short --junitxml=results/compatibility.xml | tee results/compatibility.log
+          python - <<'PYCODE'
+          import xml.etree.ElementTree as ET
+          suites = list(ET.parse('results/compatibility.xml').getroot().iter('testsuite'))
+          assert sum(int(s.attrib['tests']) for s in suites) == 12
+          assert all(int(s.attrib[k]) == 0 for s in suites for k in ['failures','errors','skipped'])
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sidecar-${{ matrix.version }}
+          path: results/

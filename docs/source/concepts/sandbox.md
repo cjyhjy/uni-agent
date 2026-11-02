@@ -122,6 +122,18 @@ existing behavior, including redirected background jobs continuing to run. No
 Python dependency or public configuration changes are required. This POSIX
 mechanism does not implement Windows Job Object cleanup.
 
+Executor saturation delays cleanup until a worker becomes available. In bounded
+tests, queued cleanups survived repeated cancellation and completed after workers
+were released, while unrelated event-loop work remained responsive. This does
+not guarantee progress if other executor work never finishes.
+
+Draining the executor means the signal work finished, not that every subprocess
+transport/child-watcher callback has run. Immediate `asyncio.run` shutdown after
+deferred spawn cleanup can still report closed-loop transport warnings even when
+no target process remains running. There is currently no explicit LocalSandbox
+transport-drain API; warning-free shutdown is not guaranteed by executor drain
+alone.
+
 ## Data Plane
 
 `SandboxBackend` exposes:
