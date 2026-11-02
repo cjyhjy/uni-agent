@@ -11,7 +11,7 @@ from pathlib import Path
 
 from uni_agent.agents.base import ModelConfig
 from uni_agent.agents.opencode import OpenCodeConfig
-from uni_agent.agents.opencode.agent import _runtime_config
+from uni_agent.agents.opencode.agent import _KEY_ENV, _runtime_config
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--cli", required=True)
@@ -31,6 +31,7 @@ rows = []
 with tempfile.TemporaryDirectory(prefix="ua-contract-") as tmp:
     env = {
         **os.environ,
+        _KEY_ENV: "contract-dummy",
         "HOME": tmp,
         "TMPDIR": tmp,
         "OPENCODE_CONFIG": "",
@@ -62,6 +63,8 @@ args.output.write_text(
             "production_guard_unchanged": True,
             "commands": rows,
             "required_flags": required,
+            "advertised_flags": advertised,
+            "config_comparison": comparison,
             "input_config_keys": sorted(config),
             "resolved_config_keys": sorted(parsed),
         },
