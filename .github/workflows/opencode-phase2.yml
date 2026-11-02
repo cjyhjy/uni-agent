@@ -8,6 +8,57 @@ defaults:
   run:
     shell: bash
 jobs:
+  linux:
+    if: github.repository == 'cjyhjy/uni-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: python -m pip install -r scripts/validation/opencode-phase1-requirements.txt
+      - name: Install pinned native CLI
+        run: |
+          npm install --prefix "$RUNNER_TEMP/opencode" --ignore-scripts --no-audit --no-fund opencode-linux-x64-baseline@1.19.3
+          echo "OPENCODE_BIN=$RUNNER_TEMP/opencode/node_modules/opencode-linux-x64-baseline/bin/opencode" >> "$GITHUB_ENV"
+      - name: Combined checkout on actual PR 298
+        run: bash scripts/validation/run_opencode_phase1.sh results/combined
+      - uses: actions/checkout@v4
+        with:
+          ref: b7e50177c967c843b91fa48e56e7d1d49da2e2a9
+          path: baseline
+      - name: Slow snapshot regressions fail on unchanged phase 1
+        working-directory: baseline
+        run: |
+          set +e
+          PYTHONPATH=. python -m pytest ../tests/uni_agent/sandbox/test_local_descendant_groups.py -k slow_snapshot -q --tb=short --junitxml=../results/red.xml > ../results/red.log 2>&1
+          result=$?
+          set -e
+          test "$result" = 1
+          python - <<'PYCODE'
+          import xml.etree.ElementTree as ET
+          suites = list(ET.parse('../results/red.xml').getroot().iter('testsuite'))
+          assert sum(int(s.attrib['tests']) for s in suites) == 4
+          assert sum(int(s.attrib['failures']) for s in suites) == 4
+          assert sum(int(s.attrib['errors']) for s in suites) == 0
+          PYCODE
+      - name: Baseline cancellation measurement
+        working-directory: baseline
+        run: PYTHONPATH=. python scripts/validation/local_cleanup_burst.py --output ../results/burst-baseline.json | tee ../results/burst-baseline.log
+      - name: Candidate cancellation measurement
+        run: PYTHONPATH=. python scripts/validation/local_cleanup_burst.py --output results/burst-candidate.json | tee results/burst-candidate.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-python-${{ matrix.python }}
+          path: results/
   sidecar:
     if: github.repository == 'cjyhjy/uni-agent'
     runs-on: ubuntu-24.04
@@ -15,9 +66,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['1.19.3']
+        version: ['1.18.18', '1.19.3']
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -42,8 +95,25 @@ jobs:
           sudo mount -o remount,bind,ro /opt/opencode
           mount | grep /opt/opencode > results/mount.txt
           /opt/opencode/bin/probe.sh | tee results/startup.log
-      - name: Loader experiment
-        run: python scripts/validation/probe_sidecar_loader.py results/loader.json
+      - name: Original versus candidate under inherited library paths
+        run: |
+          git show b7e50177c967c843b91fa48e56e7d1d49da2e2a9:examples/sidecar/opencode/opencode.sh > "$RUNNER_TEMP/original-opencode"
+          chmod +x "$RUNNER_TEMP/original-opencode"
+          python scripts/validation/probe_sidecar_loader.py results/loader.json "$RUNNER_TEMP/original-opencode"
+      - name: Default version remains rejected by the adapter
+        if: matrix.version == '1.18.18'
+        run: PYTHONPATH=. python scripts/validation/check_sidecar_version_boundary.py /opt/opencode/bin/opencode | tee results/version-boundary.json
+      - name: Combined tests through mounted candidate
+        if: matrix.version == '1.19.3'
+        env:
+          OPENCODE_BIN: /opt/opencode/bin/opencode
+          LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+        run: bash scripts/validation/run_opencode_phase1.sh results/combined-sidecar
+      - name: Real tool environment and custom shared library
+        if: matrix.version == '1.19.3'
+        env:
+          OPENCODE_SIDECAR_BIN: /opt/opencode/bin/opencode
+        run: PYTHONPATH=. python -m pytest tests/uni_agent/agents/test_opencode_sidecar_environment.py -q -s --tb=short --junitxml=results/tool-environment.xml | tee results/tool-environment.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
